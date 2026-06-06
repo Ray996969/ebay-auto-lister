@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>我的第一个表单网页</title>
+    <style>
+      .form-container {
+        display: flex;
+        flex-direction: column;
+      }
+      .form-group {
+        margin-bottom: 50px;
+      }
+
+      img {
+        max-width: 150px;
+        height: auto;
+        margin: 5px; /* 图片之间留一点小空隙 */
+      }
+    </style>
+  </head>
+  <body>
+    <div class="form-container">
+      <h2>发布新商品</h2>
+
+      <div class="form-group">
+        <label for="product-image">商品图片：</label>
+        <input
+          type="file"
+          id="product-image"
+          name="product_image"
+          accept="image/*"
+          multiple
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="product-price">商品价格：</label>
+        <div class="price-wrapper">
+          <input type="number" id="product-price" name="product_price" />
+        </div>
+      </div>
+
+      <button type="submit" id="button">立即发布商品</button>
+    </div>
+
+    <div class="product-display" id="product-display"></div>
+
+    <script>
+      const fileInput = document.getElementById("product-image");
+      const priceInput = document.getElementById("product-price");
+      const submitBtn = document.getElementById("button");
+      const productDisplay = document.getElementById("product-display");
+
+      let saveProducts = []; // this is use for display and record
+
+      function recordInfor() {
+        let newPrice = priceInput.value;
+
+        // console.log(fileInput.files)  look like this => FileList {0: File, 1: File, length: 2}
+
+        let newImage = Array.from(fileInput.files); // change the FileList into Array
+        // console.log(newImage)      look like this => (2) [File, File]
+
+        // if (!newPrice || !newImage) {
+        //   alert("please upload the image and price");
+        //   return;
+        // }
+
+        if (!newPrice && newImage.length === 0) {
+    console.log("📢 检测到一键 Mock 触发，正在自动填充假数据...");
+    newPrice = "99.99";
+    
+    // 凭空创造一个 1 字节大小的、名字叫 mock-image.jpg 的虚拟图片文件
+    const mockBlob = new Blob([" "], { type: "image/jpeg" });
+    const mockFile = new File([mockBlob], "mock-image.jpg", { type: "image/jpeg" });
+    newImage = [mockFile];
+  } else if (!newPrice || newImage.length === 0) {
+    // 如果用户只填了一半，还是正经弹窗提醒一下
+    alert("Please upload image and price, or leave both empty to Mock!");
+    return;
+  }
+
+
+
+
+        const productCard = {
+          price: newPrice,
+          image: newImage,
+        };
+
+        saveProducts.push(productCard);
+        // console.log(saveProducts);
+
+        displayProducts();
+
+        const formData = new FormData(); // allow to send image as well as text to the server, as standard JSon only for string input
+
+        // in this fetch, only one request is sending per time,
+        //  this means the backend only gonna get the request in one package,
+        //  so no conflict will be
+        formData.append("price", newPrice);
+
+        newImage.forEach((element) => {
+          // loop the newImagesArray and append each fileinput.file into the formData
+          formData.append(`images`, element);
+        });
+
+        //fetch allow JS to talk to the server, without refreshing the screen.
+
+        // 1. Provide the URL
+        // http://     -> 【通信协议】 规定前后端用“一问一答”的标准规矩传输数据。
+        // 127.0.0.1  -> 【本机IP】 网络界的“镜子”，永远指向运行代码的这台电脑本身（Localhost）。
+        // :8001       -> 【程序端口】 电脑的“门牌号”，确保数据精准送给占用 8001 端口的 Python 程序。
+        // /upload    -> 【路由终点】 后端的“业务柜台”，精准触发 Python 里的 @app.post("/upload") 函数。
+
+        fetch("http://127.0.0.1:8000/submit", {
+          method: "POST", // 2. Specify you are SENDING data
+          body: formData, // 3. Attach your package
+        })
+          .then((response) => response.json()) // 4. Read the server's confirmation receipt
+          .then((result) => {
+            console.log("Server says:", result);
+          })
+          .catch((error) => {
+            console.error("Failed to send:", error);
+          });
+      }
+
+      function displayProducts() {
+        productDisplay.innerHTML = "";
+
+        saveProducts.forEach((element) => {
+          let imageSrc = "";
+          let allImagesHTML = "";
+
+          if (element.image[0]) {
+            allImagesHTML = element.image.map((imageElement) => {
+              imageSrc = URL.createObjectURL(imageElement);
+              const imageWrapper = `
+                        <img src = "${imageSrc}">
+                    `;
+
+              return imageWrapper;
+            });
+          }
+
+          const productHTML = `<div class="product-item">
+                
+              <p>price: ${element.price}£</p>  
+             <div class="img-preview" style="display: flex; img flex-wrap: wrap; margin-top: 10px;">
+            ${allImagesHTML ? allImagesHTML : "无图片"}
+          </div>
+                
+            
+            </div>`;
+
+          productDisplay.insertAdjacentHTML("beforeend", productHTML);
+        });
+      }
+
+      submitBtn.addEventListener("click", recordInfor);
+    </script>
+  </body>
+</html>
