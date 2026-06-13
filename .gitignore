@@ -34,5 +34,3 @@ ebay-new.csv
 *.tmp
 *.temp
 
-# Ignore eBay temp file (if it's temporary)
-backend/ebay-temp.csv
