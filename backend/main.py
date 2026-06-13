@@ -10,7 +10,7 @@ import json
 import pandas as pd
 import boto3
 from pathlib import Path
-
+import requests
 
 BASE_DIR = Path(__file__).resolve().parent
 EBAY_TEMPLATE_PATH = BASE_DIR / "ebay-temp.csv"
@@ -67,6 +67,152 @@ s3_client = boto3.client(
 )
 
 
+#  ebay--------------------------------------------------------------------------
+
+
+    # get the application token, by using the two  password, this is becasue ebay use oauth 2.0 which without
+    #sharing the real password
+def get_ebay_application_token():
+    client_id = os.getenv("EBAY_CLIENT_ID")
+    client_secret = os.getenv("EBAY_CLIENT_SECRET")
+    
+    # 1. Base64 encode the Client ID and Client Secret together
+    credentials = f"{client_id}:{client_secret}"
+    encoded_creds = base64.b64encode(credentials.encode("utf-8")).decode("utf-8")
+    
+    # 2. eBay Sandbox OAuth Endpoint
+    url = "https://api.ebay.com/identity/v1/oauth2/token"
+    
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Authorization": f"Basic {encoded_creds}"
+    }
+    
+    # 3. Requesting scoping for public metadata (Taxonomy API access)
+    payload = {
+        "grant_type": "client_credentials",
+        "scope": "https://api.ebay.com/oauth/api_scope"
+    }
+    
+    print("Requesting  access token...")
+
+    # request is a python function allow to send http request to the webiste/API , just like fetch in js.
+    response = requests.post(url, headers=headers, data=payload, timeout=20)
+
+    print("Status code:", response.status_code)
+    # print(response.json()["access_token"]) # this will show the token(application access token), and the expires time which is about 7200 seconds 
+
+    return response.json()["access_token"]
+
+
+def get_uk_category_tree_id(access_token):
+
+    # 1. Define the Endpoint (Remember to use 'sandbox' for testing!)
+    url = "https://api.ebay.com/commerce/taxonomy/v1/get_default_category_tree_id/"
+
+    # 2. Package your authorization rule
+    headers = {
+        "Authorization": f"Bearer {access_token}"
+    }
+
+    # 3. Package your market filter rule
+    params = {
+        "marketplace_id": "EBAY_GB"
+    }
+
+    # 4. Fire the request tool using all three ingredients
+    response = requests.get(url, headers=headers, params=params)
+
+    return response.json()["categoryTreeId"]
+
+
+
+
+def fetch_ebay_category_and_aspects(keyword: str):
+
+
+    access_token =get_ebay_application_token()
+
+    ebay_id =get_uk_category_tree_id(access_token)
+
+
+    suggestion_url = f"https://api.ebay.com/commerce/taxonomy/v1/category_tree/{ebay_id}/get_category_suggestions"
+
+
+    header = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept-Language": "en-GB" # Target eBay UK
+    }
+
+    params = {
+        "q" : keyword
+
+    }
+
+    response =requests.get(suggestion_url,headers=header,params=params)
+
+    best_matches = response.json()
+
+    return best_matches
+
+
+
+
+def ebay_blank_form(category_id: str, access_token: str) -> list: 
+
+
+            url = f"https://api.ebay.com/commerce/taxonomy/v1/category_tree/3/get_item_aspects_for_category"
+
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+                "Accept-Language": "en-GB"  # 🌟 锁死 eBay UK：确保返回的是英式英语（如 Colour, Tyre），防错报
+            }
+    
+            params = {
+                "category_id": category_id
+            }
+
+
+            response = requests.get(url,headers=headers,params=params,timeout=20)
+
+            aspects_data = response.json()
+
+            aspects_data = aspects_data.get("aspects",[])
+
+            blank_fields = [] # ->["Brand", "Model", "Type", "Maximum Flight Time", "Connectivity", "Camera Features"]
+
+         # 1. 因为 eBay 返回的最外层是一个字典，里面有一个叫 "aspects" 的列表。
+         # 这句话的意思是：遍历这个列表里的每一个属性格。
+            for aspect in aspects_data :
+
+                # 2. 从当前属性里，把它的官方名字拿出来（比如拿到了 "Brand" 或者 "Colour"）
+                aspect_name = aspect.get("localizedAspectName")
+                
+                # 3. 深入进去，拿到控制这个属性的“约束条件”字典
+                constraint = aspect.get("aspectConstraint", {})
+                
+                # 4. 在约束条件里，查看这个字段的“使用频率/重要程度”（usage）
+                #    eBay 会标记它是 'REQUIRED'（必填）、'RECOMMENDED'（推荐）还是 'OPTIONAL'（可选）
+                usage = constraint.get("aspectUsage")  
+                
+                # 5. 核心过滤关卡：
+                #    如果这个字段是 eBay 规定【必填】或【强烈推荐】的，并且它确实有名字
+                if usage in ["REQUIRED", "RECOMMENDED"] and aspect_name:
+                    
+                    # 6. 那就通过过关验证！把它存进我们的空白表单列表里
+                    blank_fields.append(aspect_name)
+
+            return blank_fields
+
+
+
+
+
+
+
+
+
 
 
 
@@ -76,6 +222,8 @@ s3_client = boto3.client(
  #去请求里找一个普通字段 price
  #去请求里找文件字段 images
 async def receive_product(price: float = Form(...), images: List[UploadFile] = File(...)):  
+
+    
     print(f"收到商品价格: {price} £")
     
     testImages = images[0]
@@ -103,34 +251,20 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         {
             "role": "system",
             "content": (
-                "You are a strict eBay listing assistant. The user will ONLY provide you with a product packaging image and a listing price. "
-                "Your job is to look at the image and extract factual information to generate a flawless eBay listing in a strict JSON format.\n\n"
+                "You are an expert product identification assistant. Your ONLY job is to look at the product packaging image "
+                "and extract the identity of the item into a strict JSON format.\n\n"
 
-                "CRITICAL ACCURACY RULES:\n"
-                "1. Identify the product SOLELY based on the text and graphics visible on the packaging box in the image. DO NOT guess or invent features.\n"
-                "2. Keep the tone completely objective, factual, and strictly based on the box. No creative writing or exaggeration.\n\n"
-
-                "EBAY UK SPECIFIC COMPLIANCE:\n"
-                "1. 'category': Predict the most accurate official numeric eBay UK Category ID based on the product type. If uncertain, choose the most general parent category available on eBay UK.\n"
-                "2. 'specifics': Dynamically generate the most relevant item specifics as many as needed for this category.\n"
-                "   - Every key MUST be prefixed with 'C:' (e.g., 'C:Brand', 'C:Type', 'C:Model', 'C:Color', 'C:MPN').\n"
-                "   - You MUST use official eBay naming conventions for keys (CamelCase, standard English). NEVER invent your own keys.\n"
-                "   - For 'C:Brand', if no brand is clearly visible on the box, you MUST strictly return 'Unbranded'.\n"
-                "   - For 'C:Type', provide a 1-2 word standard product type (e.g., 'Drone', 'Fan', 'Adapter').\n"
-                "   - You MUST always include 'C:Model'. If no model is clearly visible, return 'Does Not Apply'. Never omit 'C:Model'.\n\n"
+                "CRITICAL RULES:\n"
+                "1. Identify the product name and type SOLELY based on the text and graphics visible on the packaging box. DO NOT guess or assume details.\n"
+                "2. 'search_keyword' MUST be a clean, concise 2-4 word phrase containing just the Brand + Core Product Type (e.g., 'Anker USB Hub', 'Logitech Mouse'). Do not include descriptors like 'New', 'Great', or item conditions.\n"
+                "3. 'title' MUST be a clean, search-optimized eBay title under 80 characters (ideally around 70) using the extracted brand, model number, and primary keywords visible on the box.\n\n"
 
                 "OUTPUT FORMAT:\n"
-                "You must respond with a strict JSON object containing EXACTLY these 4 keys. "
+                "You must respond with a strict JSON object containing EXACTLY these 2 keys. "
                 "Do not include any markdown formatting like ```json or any introductory text.\n"
                 "{\n"
-                '  "title": "A search-optimized eBay title based on visible brand/model. MUST be under 80 characters, ideally around 70. NO promotional words like Great or New.",\n'
-                '  "description": "A professional and concise product summary based ONLY on what is explicitly visible on the packaging. 100-200 characters max. No HTML. No invented details.",\n'
-                '  "category": "A pure numeric string representing the eBay Category ID.",\n'
-                '  "specifics": {\n'
-                '    "C:Brand": "Brand Name or Unbranded",\n'
-                '    "C:Type": "Product Type",\n'
-                '    "C:Model": "Model Number if visible, otherwise Does Not Apply"\n'
-                "  }\n"
+                '  "search_keyword": "A concise 2-4 word brand and product phrase for eBay directory search.",\n'
+                '  "title": "A search-optimized eBay title under 80 characters using extracted box text."\n'
                 "}"
             )
         },
@@ -139,7 +273,7 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
             "content": [
                 {
                     "type": "text",
-                    "text": f"This item is being listed for {price} GBP. Please look at the image of the packaging box and generate the required JSON object following the strict rules."
+                    "text": "Please inspect this packaging image and output the Stage 1 identification JSON object."
                 },
                 {
                     "type": "image_url",
@@ -197,11 +331,106 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         final_products = {
             "price" : price,
             "title" : ai_suggestion_dic["title"],
-            "description" : ai_suggestion_dic["description"],
+            "keyword": ai_suggestion_dic["search_keyword"],
+            
+            # "description" : ai_suggestion_dic["description"],
             "image_name": testImages.filename,
             "image_url": public_image_url # 把云端的真实直链带给前端展示
 
         }
+
+        access_token = get_ebay_application_token()
+
+        ebay_suggestions = fetch_ebay_category_and_aspects(ai_suggestion_dic["search_keyword"])
+
+        # print("ebay suggestion:", ebay_suggestions)
+
+
+
+        suggestions = ebay_suggestions.get("categorySuggestions", [])
+
+        first_suggestion = suggestions[0]["category"]
+
+        suggestions_id = first_suggestion["categoryId"]
+
+        
+
+
+        official_blank_form = ebay_blank_form(suggestions_id,access_token)
+
+    # ==========================================
+        # STAGE 2: 拿着 eBay 官方清单，让 AI 第二次精准看图填空
+        # ==========================================
+        print("tesing......: ", official_blank_form)
+        
+        # 1. 把列表变成一句话给 AI 看，例如: "Brand, Model, Type, Colour"
+        fields_needed_str = ", ".join(official_blank_form)
+        
+        print(f"正在启动 Stage 2,命令 AI 提取这些字段: {fields_needed_str}")
+        
+        stage2_response = client.chat.completions.create(
+            model="gpt-4o",
+            response_format={ "type": "json_object" },
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a precise data entry assistant. The user will provide you with a product packaging image, "
+                        "and a list of official fields that eBay requires for this item.\n\n"
+                        
+                        "YOUR TASK:\n"
+                        "1. Look at the packaging image very carefully.\n"
+                        "2. Extract the true value for each requested field. If a field is not visible on the box at all, return 'Does Not Apply'.\n"
+                        "3. Generate a concise, professional description based ONLY on visible text (100-200 characters max, no HTML).\n\n"
+                        
+                        "OUTPUT FORMAT:\n"
+                        "You must return a strict JSON object with EXACTLY two keys: 'description' and 'specifics'.\n"
+                        "Inside 'specifics', you MUST use the exact field names provided by the user as keys.\n"
+                        "Do not use markdown formatting."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Please look at the image and fill in these exact fields: [{fields_needed_str}]. Also provide the 'description'."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{testImages.content_type};base64,{imageEncode}"
+                            },
+                        },
+                    ],
+                }
+            ],
+        )
+        
+        # 2. 解析 Stage 2 完美的 JSON 结果
+        stage2_data = json.loads(stage2_response.choices[0].message.content)
+        print("🎉 Stage 2 AI 填空结果:", stage2_data)
+
+        # 大概会打印这个东西
+        #         {
+        #   "description": "Genuine Logitech MX Master 3 wireless mouse in black. Supports Bluetooth and 2.4GHz wireless connection.",
+        #   "specifics": {
+        #     "Brand": "Logitech",
+        #     "Model": "MX Master 3",
+        #     "Type": "Ergonomic Mouse",
+        #     "Colour": "Black"
+        #   }
+        # }
+
+
+
+
+
+
+
+
+
+
 
         GLOBAL_PRODUCTS_QUEUE.append(final_products)
         
@@ -227,16 +456,20 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         df_old = pd.read_csv(EBAY_TEMPLATE_PATH, header=1)
       
 
+
+
+
+
         new_items = [{
             EBAY_ACTION_COLUMN: "VerifyAdd",  # 或 "Add"
-            "*Category":  ai_suggestion_dic["category"],                    # AI 动态预测的分类 ID
+            # "*Category":  ai_suggestion_dic["category"],                    # AI 动态预测的分类 ID
 
             # 2. 商品基本信息
             "*Title": ai_suggestion_dic["title"] ,               # AI 生成的 70 字左右标题
             "*ConditionID": "1000",                                                         # 全新状态码固定为 "1000"
 
             # 3. 商品详情描述
-            "*Description": ai_suggestion_dic["description"] ,               # AI 生成的规格描述
+            # "*Description": ai_suggestion_dic["description"] ,               # AI 生成的规格描述
             # 🌟 填坑：精准将 AWS S3 的网络直链绑定到官方模板的 PicURL 这一格！
             "PicURL": public_image_url,
 
@@ -254,13 +487,11 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         
 
 
-        for key, value in ai_suggestion_dic["specifics"].items():
-            new_items[0][key] = value
+        # for key, value in ai_suggestion_dic["specifics"].items():
+        #     new_items[0][key] = value
 
         
        
-
-
 
         
         #：把上面那条新商品的数据，塞进方括号 [...] 变成一个列表，然后通过 pd.DataFrame() 转换成一个 DataFrame（内存中的电子表格）。
@@ -280,7 +511,7 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
 
 
 
-        print(df_combined)
+        # print(df_combined)
         
 
         df_combined.to_csv(
