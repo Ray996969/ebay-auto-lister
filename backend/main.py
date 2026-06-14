@@ -22,24 +22,18 @@ EBAY_PAYMENT_PROFILE_ID = os.getenv("EBAY_PAYMENT_PROFILE_ID", "396481420023")
 EBAY_RETURN_PROFILE_ID = os.getenv("EBAY_RETURN_PROFILE_ID", "396481523023")
 
 
-def normalise_item_specifics(ai_suggestion_dic):
-    specifics = ai_suggestion_dic.setdefault("specifics", {})
+def ebay_specific_column(field_name: str) -> str:
+    if field_name.startswith("C:"):
+        return field_name
+    return f"C:{field_name}"
 
-    if not specifics.get("C:Brand"):
-        specifics["C:Brand"] = "Unbranded"
-
-    if not specifics.get("C:Type"):
-        specifics["C:Type"] = "Unit"
-
-    if not specifics.get("C:Model"):
-        specifics["C:Model"] = "Does Not Apply"
-
-    return specifics
 
 
 GLOBAL_PRODUCTS_QUEUE = []
 
 MOCK_MODE = False
+
+
 
 
 load_dotenv()
@@ -182,6 +176,7 @@ def ebay_blank_form(category_id: str, access_token: str) -> list:
 
             blank_fields = [] # ->["Brand", "Model", "Type", "Maximum Flight Time", "Connectivity", "Camera Features"]
 
+
          # 1. 因为 eBay 返回的最外层是一个字典，里面有一个叫 "aspects" 的列表。
          # 这句话的意思是：遍历这个列表里的每一个属性格。
             for aspect in aspects_data :
@@ -222,15 +217,35 @@ def ebay_blank_form(category_id: str, access_token: str) -> list:
  #去请求里找一个普通字段 price
  #去请求里找文件字段 images
 async def receive_product(price: float = Form(...), images: List[UploadFile] = File(...)):  
-
-    
     print(f"收到商品价格: {price} £")
-    
-    testImages = images[0]
 
-    # 在内存中把这张图片读取出来，并转换成 Base64 字符串
-    imageContent = await testImages.read()
-    imageEncode = base64.b64encode(imageContent).decode("utf-8")
+    image_container = []
+    imageContent = [] 
+    first_image = images[0]
+   
+
+    for img in images:
+        read_temp = await img.read()
+        imageContent.append(read_temp)
+        image_container.append(base64.b64encode(read_temp).decode("utf-8"))
+        # 先用 b64encode 把图片的二进制字节（Bytes）压缩成 Base64 编码，再用 .decode("utf-8") 把这个编码转换成纯文本的字符串（String）。因为 OpenAI 的 API 只接受字符串格式的 Base64，不能直接接收原始的二进制数据。
+        
+    
+    user_content = [ { "type": "text","text": "Please inspect this packaging image and output the Stage 1 identification JSON object."
+         }]
+        
+
+    for img in image_container:
+        user_content.append({"type": "image_url", "image_url" : {"url": f"data:{first_image.content_type};base64,{img}"}})
+
+
+
+    
+    # testImages = images[0]
+
+    # # 在内存中把这张图片读取出来，并转换成 Base64 字符串
+    # imageContent = await testImages.read()
+    # imageEncode = base64.b64encode(imageContent).decode("utf-8")
 
 
 
@@ -270,21 +285,12 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         },
         {
             "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Please inspect this packaging image and output the Stage 1 identification JSON object."
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{testImages.content_type};base64,{imageEncode}"
-                    },
-                },
-            ],
+            "content": user_content,
         }
     ],
 )
+           
+            
         
         # 4. 抓取 AI 生成的文案结果
         ai_suggestion = response.choices[0].message.content
@@ -297,7 +303,6 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
 
         #字符串变成 Python 字典,因为AI给的response 还是string
         ai_suggestion_dic = json.loads(ai_suggestion)
-        normalise_item_specifics(ai_suggestion_dic)
 
 
         print("开始上传图片到 S3")
@@ -306,39 +311,29 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         bucket_name = os.getenv("AWS_STORAGE_BUCKET_NAME", "leheng-my-storage-2026-915093573061-eu-north-1-an")
         region = os.getenv("AWS_REGION", "eu-north-1")
 
-        # 这是文件在网盘里的路径和名字。加上 products/ 前缀，就像是在网盘里建了一个名为 “products” 的文件夹，把图片放进去，让文件分类更整洁。
-        s3_path_name = f"products/{testImages.filename}"
+        public_url_container = []
 
-        #执行上传（把货塞进亚马逊的仓库）
-        s3_client.put_object(
+        for i, img in enumerate(images):
+            s3_path_name = f"products/{img.filename}"
+
+            s3_client.put_object(
             Bucket=bucket_name,
             Key=s3_path_name,
-            Body=imageContent,             # 直接复用之前已经 read() 好的 imageContent
-            ContentType=testImages.content_type, # 保持图片的真实格式 (png/jpeg),告诉亚马逊这是一张图片（比如 image/jpeg）
+            Body=imageContent[i],             # 直接复用之前已经 read() 好的 imageContent
+            ContentType=img.content_type, # 保持图片的真实格式 (png/jpeg),告诉亚马逊这是一张图片（比如 image/jpeg）
         )
 
-        #按照亚马逊 S3 的固定域名格式，把你的网盘名、地区和文件名拼接成一个标准的网址。
-        public_image_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{s3_path_name}"
+            public_image_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{s3_path_name}"
+            public_url_container.append(public_image_url)
 
-
-        print(f"📸 图片成功上传云端！公开链接为: {public_image_url}")
-
-     
+            print(f"📸 图片成功上传云端！公开链接为: {public_image_url}")
+        # use join to add ! so ebay can read in one go
+        public_url_container = "!".join(public_url_container)
+        
         
 
-   
-
-        final_products = {
-            "price" : price,
-            "title" : ai_suggestion_dic["title"],
-            "keyword": ai_suggestion_dic["search_keyword"],
-            
-            # "description" : ai_suggestion_dic["description"],
-            "image_name": testImages.filename,
-            "image_url": public_image_url # 把云端的真实直链带给前端展示
-
-        }
-
+     
+    
         access_token = get_ebay_application_token()
 
         ebay_suggestions = fetch_ebay_category_and_aspects(ai_suggestion_dic["search_keyword"])
@@ -361,12 +356,21 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
     # ==========================================
         # STAGE 2: 拿着 eBay 官方清单，让 AI 第二次精准看图填空
         # ==========================================
-        print("tesing......: ", official_blank_form)
         
         # 1. 把列表变成一句话给 AI 看，例如: "Brand, Model, Type, Colour"
         fields_needed_str = ", ".join(official_blank_form)
         
         print(f"正在启动 Stage 2,命令 AI 提取这些字段: {fields_needed_str}")
+
+
+        user_content_for_second_ai = [ { "type": "text","text": f"Please look at the image and fill in these exact fields: [{fields_needed_str}]. Also provide the 'description'."
+
+         }]
+        
+        for img in image_container:
+            user_content_for_second_ai.append({"type": "image_url", "image_url" : {"url": f"data:{first_image.content_type};base64,{img}"}})
+
+
         
         stage2_response = client.chat.completions.create(
             model="gpt-4o",
@@ -374,13 +378,14 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
             messages=[
                 {
                     "role": "system",
-                    "content": (
+                "content": (
                         "You are a precise data entry assistant. The user will provide you with a product packaging image, "
                         "and a list of official fields that eBay requires for this item.\n\n"
                         
                         "YOUR TASK:\n"
                         "1. Look at the packaging image very carefully.\n"
-                        "2. Extract the true value for each requested field. If a field is not visible on the box at all, return 'Does Not Apply'.\n"
+                        # 🌟 这里的规则改掉：除 Brand 外，其余找不到的全部返回 'See Image'
+                        "2. Extract the true value for each requested field. If Brand is not visible, return 'Unbranded'. If any other field is not visible on the box at all, strictly return 'See Image'.\n"
                         "3. Generate a concise, professional description based ONLY on visible text (100-200 characters max, no HTML).\n\n"
                         
                         "OUTPUT FORMAT:\n"
@@ -391,18 +396,7 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
                 },
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"Please look at the image and fill in these exact fields: [{fields_needed_str}]. Also provide the 'description'."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{testImages.content_type};base64,{imageEncode}"
-                            },
-                        },
-                    ],
+                    "content": user_content_for_second_ai,
                 }
             ],
         )
@@ -424,11 +418,15 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
 
 
 
+        final_products = {
+            "price" : price,
+            "title" : ai_suggestion_dic["title"],
+            "keyword": ai_suggestion_dic["search_keyword"],
+            
+            "description" : stage2_data["description"],
+            "image_url": public_image_url # 把云端的真实直链带给前端展示
 
-
-
-
-
+        }
 
 
 
@@ -436,15 +434,24 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         
         
 
-        # 1. 用纯文本方式读取并保留第 0 行的 Info 头信息
+        # 1. 用纯文本方式读取并保留第 0 行的 Info 头信息, e.g Info,Version=1.0.0,Template=fx_category_template_EBAY_GB
         with open(EBAY_TEMPLATE_PATH, "r", encoding="utf-8-sig") as f:
             first_line = f.readline()
 
+
+        df_old = None
+
+        file_is_empty = (not os.path.exists(EBAY_OUTPUT_PATH)) or (os.path.getsize(EBAY_OUTPUT_PATH) == 0)
+
+        if os.path.getsize(EBAY_OUTPUT_PATH) == 0:
             # python 里的read file 读取了frist line, 如果下一次用    second_line = f.readline() 就会读取第二line 而不是第一line
             # 这个是因为pointer 已经移到了next line了
+            #  open the new csv, which is ebay-new.csv, 
+            # and write the first_line from the previous read operation , then write into the frist line
+            with open(EBAY_OUTPUT_PATH, "w", encoding="utf-8") as nf:
+                nf.write(first_line)
 
-        with open(EBAY_OUTPUT_PATH, "w", encoding="utf-8") as nf:
-            nf.write(first_line)
+            # write operation will clean all the previous data
 
     
 
@@ -453,25 +460,24 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         #   infor                                                              >>> Get more details.......
         #   infor  
         #   infor   
+        
         df_old = pd.read_csv(EBAY_TEMPLATE_PATH, header=1)
-      
 
 
 
 
-
-        new_items = [{
-            EBAY_ACTION_COLUMN: "VerifyAdd",  # 或 "Add"
-            # "*Category":  ai_suggestion_dic["category"],                    # AI 动态预测的分类 ID
+        new_items = {
+            EBAY_ACTION_COLUMN: "Add",  # 或 "Add"
+            "*Category":  suggestions_id,                    # AI 动态预测的分类 ID
 
             # 2. 商品基本信息
             "*Title": ai_suggestion_dic["title"] ,               # AI 生成的 70 字左右标题
             "*ConditionID": "1000",                                                         # 全新状态码固定为 "1000"
 
             # 3. 商品详情描述
-            # "*Description": ai_suggestion_dic["description"] ,               # AI 生成的规格描述
+            "*Description": stage2_data["description"] ,               # AI 生成的规格描述
             # 🌟 填坑：精准将 AWS S3 的网络直链绑定到官方模板的 PicURL 这一格！
-            "PicURL": public_image_url,
+            "PicURL": public_url_container,
 
             # 4. 销售政策
             "*Format": "FixedPrice",                                                        # 一口价模式
@@ -483,19 +489,19 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
             "ShippingProfileID": EBAY_SHIPPING_PROFILE_ID,
             "PaymentProfileID": EBAY_PAYMENT_PROFILE_ID,
             "ReturnProfileID": EBAY_RETURN_PROFILE_ID,
-            } ]
+            "Product:EAN": "Does not apply",
+            } 
         
+        specifics_data_from_ebay = stage2_data["specifics"]
 
-
-        # for key, value in ai_suggestion_dic["specifics"].items():
-        #     new_items[0][key] = value
-
-        
+        for key,value in specifics_data_from_ebay.items():
+            new_items[ebay_specific_column(key)] = value
        
 
         
-        #：把上面那条新商品的数据，塞进方括号 [...] 变成一个列表，然后通过 pd.DataFrame() 转换成一个 DataFrame（内存中的电子表格）。
-        df_new = pd.DataFrame(new_items)
+        #：把上面那条新商品的数据，塞进方括号 [...] 变成一个list，然后通过 pd.DataFrame() 转换成一个 DataFrame（内存中的电子表格）。
+        #  如果里面是这样子  "*Category":  [suggestions_id, suggestion_id2] 就可以不用放在list            
+        df_new = pd.DataFrame([new_items])
 
 
         df_combined = pd.concat([df_new,df_old],ignore_index=True)
@@ -503,18 +509,21 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         # 但是会把新的数据的标题都放在最左边，剩下的没有提到的放在右边。
 
 
+
+        df_ebay_suggestion = pd.DataFrame([stage2_data])
+        
+        df_final = pd.concat([df_ebay_suggestion,df_combined])
+
+
+
+
         all_current_columns = list(dict.fromkeys(df_old.columns.tolist() + df_new.columns.tolist()))
-        # 强制让拼接后的表格，100% 按照老模板一字不差的左右顺序重新排好坐席
-        # df_combined = df_combined.reindex(columns=df_old.columns.tolist()) # 变成基础列表（List）
+        df_final = df_combined.reindex(columns=all_current_columns)
 
-        df_combined = df_combined.reindex(columns=all_current_columns)
-
-
-
-        # print(df_combined)
+        df_only_new_row = df_final.head(1)
         
 
-        df_combined.to_csv(
+        df_final.to_csv(
         EBAY_OUTPUT_PATH,          # 1. 保存的目的地新文件名
 
         mode='a',          # 2. 写入模式：'a' 代表 Append（追加粘贴）
@@ -525,7 +534,7 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
                        #    【细节】：Pandas 默认会在表格最左边自动生成一列 0,1,2,3 的数字，必须把它关掉。
                        #    【Example】: 如果设为 True，表格最左边会平白无故多出一列数字，上传 eBay 就会直接报错。
 
-        header=True,       # 4. 是否写入大表头（列名）：True 代表“要写入”
+        header=file_is_empty,       # 4. 是否写入大表头（列名）：True 代表“要写入”
                        #    # 【细节】：因为新文件现在只有一句话，所以我们必须把商品属性的这一行标题写进去。
                        #    【Example】: 会在暗号下面写入一行 "*Action, CustomLabel, *Category, *Title"。
 
