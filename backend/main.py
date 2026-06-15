@@ -453,17 +453,6 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
 
             # write operation will clean all the previous data
 
-    
-
-        # 1. 临时读取原文件的结构（header=1 表示把第2行，也就是索引为1的那一行当作表头），跳过第 1 行那句没用的系统配置
-         #  *Action(SiteID=UK|Country=GB|Currency=GBP|Version=1193|CC=UTF-8)|   CustomLabel
-        #   infor                                                              >>> Get more details.......
-        #   infor  
-        #   infor   
-        
-        df_old = pd.read_csv(EBAY_TEMPLATE_PATH, header=1)
-
-
 
 
         new_items = {
@@ -498,49 +487,42 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
             new_items[ebay_specific_column(key)] = value
        
 
-        
-        #：把上面那条新商品的数据，塞进方括号 [...] 变成一个list，然后通过 pd.DataFrame() 转换成一个 DataFrame（内存中的电子表格）。
-        #  如果里面是这样子  "*Category":  [suggestions_id, suggestion_id2] 就可以不用放在list            
+        # 1. 临时读取原文件的结构（header=1 表示把第2行，也就是索引为1的那一行当作表头），跳过第 1 行那句没用的系统配置
+         #  *Action(SiteID=UK|Country=GB|Currency=GBP|Version=1193|CC=UTF-8)|   CustomLabel
+        #   infor                                                              >>> Get more details.......
+        #   infor  
+        #   infor   
+        df_old = pd.read_csv(EBAY_TEMPLATE_PATH, header=1)
         df_new = pd.DataFrame([new_items])
 
+        # Step 1: Convert old columns to list
+        old_list = df_old.columns.tolist()  # ['Name', 'Price', 'Quantity']
 
-        df_combined = pd.concat([df_new,df_old],ignore_index=True)
-        #，concat 把数据行上下拼，不会动表头的位置, 所以把新的数据（就是产品的数据放在前面）。 旧的数据放在后面（就是剩下的那些info 的内容）
-        # 但是会把新的数据的标题都放在最左边，剩下的没有提到的放在右边。
+        # Step 2: Convert new columns to list
+        new_list = df_new.columns.tolist()  # ['Name', 'Price', 'Description']
+
+        # Step 3: Combine both lists
+        combined = old_list + new_list  # ['Name', 'Price', 'Quantity', 'Name', 'Price', 'Description']
+
+        # Step 4: Remove duplicates using dict.fromkeys()
+        unique_dict = dict.fromkeys(combined)  # {'Name': None, 'Price': None, 'Quantity': None, 'Description': None}
+
+        # Step 5: Convert back to list
+        all_current_columns = list(unique_dict)  # ['Name', 'Price', 'Quantity', 'Description']
+
+        # Step 6: Reorder df_new columns to match all_current_columns
+        df_final = df_new.reindex(columns=all_current_columns)
 
 
-
-        df_ebay_suggestion = pd.DataFrame([stage2_data])
-        
-        df_final = pd.concat([df_ebay_suggestion,df_combined])
-
-
-
-
-        all_current_columns = list(dict.fromkeys(df_old.columns.tolist() + df_new.columns.tolist()))
-        df_final = df_combined.reindex(columns=all_current_columns)
-
-        df_only_new_row = df_final.head(1)
-        
 
         df_final.to_csv(
-        EBAY_OUTPUT_PATH,          # 1. 保存的目的地新文件名
-
-        mode='a',          # 2. 写入模式：'a' 代表 Append（追加粘贴）
-                       #    【细节】：意思是“不覆盖旧内容，在文件屁股后面接着写”。这里用来紧跟在第一行 eBay 暗号的下面。
-                       #    【Example】: 文件里本来有 "Info,Version=1.0..."，执行后，数据会从第二行开始无缝拼接。
-
-        index=False,       # 3. 是否保存隐藏行号：False 代表“不要保存”
-                       #    【细节】：Pandas 默认会在表格最左边自动生成一列 0,1,2,3 的数字，必须把它关掉。
-                       #    【Example】: 如果设为 True，表格最左边会平白无故多出一列数字，上传 eBay 就会直接报错。
-
-        header=file_is_empty,       # 4. 是否写入大表头（列名）：True 代表“要写入”
-                       #    # 【细节】：因为新文件现在只有一句话，所以我们必须把商品属性的这一行标题写进去。
-                       #    【Example】: 会在暗号下面写入一行 "*Action, CustomLabel, *Category, *Title"。
-
-        encoding='utf-8'  
-)
-        
+            EBAY_OUTPUT_PATH,
+            mode='a',
+            index=False,
+            header=file_is_empty,
+            encoding='utf-8'
+        )
+                
         return{
             "success" : True,
             "message" : "products created successfully",
