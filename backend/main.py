@@ -11,6 +11,8 @@ import pandas as pd
 import boto3
 from pathlib import Path
 import requests
+import urllib.parse
+
 
 BASE_DIR = Path(__file__).resolve().parent
 EBAY_TEMPLATE_PATH = BASE_DIR / "ebay-temp.csv"
@@ -235,8 +237,18 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
          }]
         
 
-    for img in image_container:
-        user_content.append({"type": "image_url", "image_url" : {"url": f"data:{first_image.content_type};base64,{img}"}})
+    # for img in image_container:
+    #     user_content.append({"type": "image_url", "image_url" : {"url": f"data:{first_image.content_type};base64,{img}"}})
+
+    #  修复后：使用 zip 同时遍历原始图片列表和 Base64 列表
+    for raw_img, b64_str in zip(images, image_container):
+        user_content.append({
+            "type": "image_url", 
+            "image_url": {
+                "url": f"data:{raw_img.content_type};base64,{b64_str}"
+            }
+        })
+
 
 
 
@@ -272,15 +284,20 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
                 "CRITICAL RULES:\n"
                 "1. Identify the product name and type SOLELY based on the text and graphics visible on the packaging box. DO NOT guess or assume details.\n"
                 "2. 'search_keyword' MUST be a clean, concise 2-4 word phrase containing just the Brand + Core Product Type (e.g., 'Anker USB Hub', 'Logitech Mouse'). Do not include descriptors like 'New', 'Great', or item conditions.\n"
-                "3. 'title' MUST be a clean, search-optimized eBay title under 80 characters (ideally around 70) using the extracted brand, model number, and primary keywords visible on the box.\n\n"
+                "3. 'title': MUST be a search-optimized eBay title between 65-80 characters. \n"
+                "   - Structure: [Brand] [Model Number] [Core Product Name] [Key Specs/Features] [Benefit/Usage].\n"
+                "   - MUST NOT include condition terms like 'New' (this is handled by the system category).\n"
+                "   - IF there is remaining space, append relevant high-volume search terms found on the box (e.g., 'Quiet', 'Powerful', 'Portable', 'Adjustable').\n"
+                "   - DO NOT exceed 80 characters.\n\n"
+
+
 
                 "OUTPUT FORMAT:\n"
                 "You must respond with a strict JSON object containing EXACTLY these 2 keys. "
                 "Do not include any markdown formatting like ```json or any introductory text.\n"
                 "{\n"
                 '  "search_keyword": "A concise 2-4 word brand and product phrase for eBay directory search.",\n'
-                '  "title": "A search-optimized eBay title under 80 characters using extracted box text."\n'
-                "}"
+                '  "title": "A search-optimized eBay title (65-80 characters) emphasizing specs and features."\n'                "}"
             )
         },
         {
@@ -323,14 +340,19 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
             ContentType=img.content_type, # 保持图片的真实格式 (png/jpeg),告诉亚马逊这是一张图片（比如 image/jpeg）
         )
 
-            public_image_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{s3_path_name}"
+            # public_image_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{s3_path_name}"
+            
+            # 对文件名进行 URL 编码，把空格变成 %20
+            encoded_s3_path_name = urllib.parse.quote(s3_path_name)
+            public_image_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{encoded_s3_path_name}"
+                        
+                        
+            
             public_url_container.append(public_image_url)
 
             print(f"📸 图片成功上传云端！公开链接为: {public_image_url}")
         # use join to add ! so ebay can read in one go
-        public_url_container = "!".join(public_url_container)
-        
-        
+        ebay_pic_urls = "|".join(public_url_container)        
 
      
     
@@ -367,8 +389,19 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
 
          }]
         
-        for img in image_container:
-            user_content_for_second_ai.append({"type": "image_url", "image_url" : {"url": f"data:{first_image.content_type};base64,{img}"}})
+
+        # for img in image_container:
+        #     user_content_for_second_ai.append({"type": "image_url", "image_url" : {"url": f"data:{first_image.content_type};base64,{img}"}})
+
+        for raw_img, b64_str in zip(images, image_container):
+            user_content_for_second_ai.append({
+            "type": "image_url", 
+            "image_url": {
+                "url": f"data:{raw_img.content_type};base64,{b64_str}"
+            }
+         })
+
+
 
 
         
@@ -379,20 +412,42 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
                 {
                     "role": "system",
                 "content": (
-                        "You are a precise data entry assistant. The user will provide you with a product packaging image, "
-                        "and a list of official fields that eBay requires for this item.\n\n"
-                        
-                        "YOUR TASK:\n"
-                        "1. Look at the packaging image very carefully.\n"
-                        # 🌟 这里的规则改掉：除 Brand 外，其余找不到的全部返回 'See Image'
-                        "2. Extract the true value for each requested field. If Brand is not visible, return 'Unbranded'. If any other field is not visible on the box at all, strictly return 'See Image'.\n"
-                        "3. Generate a concise, professional description based ONLY on visible text (100-200 characters max, no HTML).\n\n"
-                        
-                        "OUTPUT FORMAT:\n"
-                        "You must return a strict JSON object with EXACTLY two keys: 'description' and 'specifics'.\n"
-                        "Inside 'specifics', you MUST use the exact field names provided by the user as keys.\n"
-                        "Do not use markdown formatting."
+                     "You are a precise data entry assistant. The user will provide you with images of a utility/consumer product "
+                    "(such as electronics, gadgets, tools, home goods, or accessories). These images might show the retail packaging box "
+                    "or the physical item itself.\n\n"
+
+
+                    "YOUR TASK:\n"
+                    "1. Analyze the provided images very carefully. Look for brand logos, printed specifications, stickers, model numbers, engraving, or distinct visual features.\n"
+                    "2. Extract the true value for each requested field based on the list provided by the user. You MUST follow these strict data-cleaning rules directly in your output:\n"
+                    "   - BRAND FIELD: If the brand is not visible or cannot be identified, strictly return 'Unbranded'.\n"
+                    
+                    # 🌟 核心修复 1：针对 Model 字段，绝对不能留空
+                    "   - MODEL FIELD: If the specific model number or model name is missing or cannot be found in the image, you MUST strictly return 'Does Not Apply'. NEVER leave it as an empty string \"\".\n"
+                    
+                    # 🌟 核心修复 2：针对 Type 字段，绝对不能留空，必须根据上下文推断一个通用词
+                    "   - TYPE FIELD: If the product type field is missing or unclear, you MUST NOT leave it empty. Instead, deduce a generic category-appropriate term based on what the item actually is (e.g., 'WiFi Extender', 'Projector', 'Paint Pens').\n"
+                    
+                    "   - COLOR FIELD: If the color cannot be found on the packaging OR cannot be determined from the physical product, you MUST return an empty string \"\" (Do not write 'None', 'N/A', or 'See Image').\n"
+                    "   - MPN / UPC / EAN FIELDS: If any identifier/model number is not visible, you MUST strictly return 'Does Not Apply'. No exceptions.\n"
+                    "   - ANY OTHER RECOMMENDED FIELDS: For any other recommended fields requested by the user, if the information is missing, strictly return an empty string \"\".\n"
+
+                    "3. Generate a factual, professional product description based SOLELY on the visible text, specifications, or obvious design features. "
+                   "Do not embellish, exaggerate, or guess any details. This factual part MUST be strictly between 100-200 characters long (excluding the mandatory suffix below).\n"
+                   "   - MANDATORY SUFFIX: At the very end of the description, you MUST append this exact phrase: '\\n\\nThe item is brand new and unused. If you have any questions regarding the product, please feel free to contact me.'\n\n"
+                
+
+                    "OUTPUT FORMAT RULES (CRITICAL):\n"
+                    "- You must return a strict JSON object with EXACTLY two keys: 'description' and 'specifics'.\n"
+                    "- Inside 'specifics', you MUST use the exact field names provided by the user as keys.\n"
+                    "- Even if a value is an empty string \"\", you MUST keep the key inside the 'specifics' object. Do NOT drop or omit any keys.\n"
+                    "- Do not use markdown formatting."
                     )
+
+
+
+
+                    
                 },
                 {
                     "role": "user",
@@ -403,6 +458,10 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         
         # 2. 解析 Stage 2 完美的 JSON 结果
         stage2_data = json.loads(stage2_response.choices[0].message.content)
+
+
+
+
         print("🎉 Stage 2 AI 填空结果:", stage2_data)
 
         # 大概会打印这个东西
@@ -456,30 +515,34 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
 
 
         new_items = {
-            EBAY_ACTION_COLUMN: "Add",  # 或 "Add"
-            "*Category":  suggestions_id,                    # AI 动态预测的分类 ID
+        EBAY_ACTION_COLUMN: "Add",  # 或 "Add"
+        "*Category":  suggestions_id,                    # AI 动态预测的分类 ID
 
-            # 2. 商品基本信息
-            "*Title": ai_suggestion_dic["title"] ,               # AI 生成的 70 字左右标题
-            "*ConditionID": "1000",                                                         # 全新状态码固定为 "1000"
+        # 2. 商品基本信息
+        "*Title": ai_suggestion_dic["title"] ,               # AI 生成的 70 字左右标题
+        "*ConditionID": "1000",                                                         # 全新状态码固定为 "1000"
 
-            # 3. 商品详情描述
-            "*Description": stage2_data["description"] ,               # AI 生成的规格描述
-            # 🌟 填坑：精准将 AWS S3 的网络直链绑定到官方模板的 PicURL 这一格！
-            "PicURL": public_url_container,
+        # 3. 商品详情描述
+        "*Description": stage2_data["description"] ,               # AI 生成的规格描述
+        # 🌟 填坑：精准将 AWS S3 的网络直链绑定到官方模板的 PicURL 这一格！
+        "PicURL": ebay_pic_urls,
 
-            # 4. 销售政策
-            "*Format": "FixedPrice",                                                        # 一口价模式
-            "*Duration": "GTC",                                                             # 长期在线直到卖完
-            "*StartPrice": price,                                       # 商品售价
-            "*Quantity": "1",                                                               # 库存数量
-            "*Location": EBAY_ITEM_LOCATION,                                                # 商品所在地，例如 London
+        # 4. 销售政策
+        "*Format": "FixedPrice",                                                        # 一口价模式
+        "*Duration": "GTC",                                                             # 长期在线直到卖完
+        "*StartPrice": price,                                       # 商品售价
+        "*Quantity": "1",                                                               # 库存数量
+        "*Location": EBAY_ITEM_LOCATION,                                                # 商品所在地，例如 London
 
-            "ShippingProfileID": EBAY_SHIPPING_PROFILE_ID,
-            "PaymentProfileID": EBAY_PAYMENT_PROFILE_ID,
-            "ReturnProfileID": EBAY_RETURN_PROFILE_ID,
-            "Product:EAN": "Does not apply",
-            } 
+        # 🌟 修复必填项留空问题
+        "*DispatchTimeMax": "3",                                                        # 发货准备时间（数字，如 3 或 5，代表较长的准备天数）
+        "*ReturnsAcceptedOption": "ReturnsNotAccepted",                                 # 设置为不接受退货
+
+        "ShippingProfileID": EBAY_SHIPPING_PROFILE_ID,
+        "PaymentProfileID": EBAY_PAYMENT_PROFILE_ID,
+        "ReturnProfileID": EBAY_RETURN_PROFILE_ID,
+        "Product:EAN": "Does not apply",
+    }
         
         specifics_data_from_ebay = stage2_data["specifics"]
 
@@ -492,36 +555,66 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
         #   infor                                                              >>> Get more details.......
         #   infor  
         #   infor   
-        df_old = pd.read_csv(EBAY_TEMPLATE_PATH, header=1)
-        df_new = pd.DataFrame([new_items])
+# =========================================================================
+        # 🌟 核心修复：动态类目属性全量对齐安全写入逻辑
+        # =========================================================================
+        
+        with open(EBAY_TEMPLATE_PATH, "r", encoding="utf-8-sig") as f:
+            first_line = f.readline()
 
-        # Step 1: Convert old columns to list
-        old_list = df_old.columns.tolist()  # ['Name', 'Price', 'Quantity']
+        # 2. 检查输出文件是否存在且不为空
+        output_file_exists = os.path.exists(EBAY_OUTPUT_PATH) and os.path.getsize(EBAY_OUTPUT_PATH) > 0
 
-        # Step 2: Convert new columns to list
-        new_list = df_new.columns.tolist()  # ['Name', 'Price', 'Description']
+        if output_file_exists:
+            # 如果文件存在，把它“整体读入内存”来确保列对齐。keep_default_na=False 防止 Pandas 自动转浮点数
+            try:
+                df_existing = pd.read_csv(EBAY_OUTPUT_PATH, skiprows=[0], keep_default_na=False)
+            except Exception:
+                df_existing = pd.read_csv(EBAY_TEMPLATE_PATH, header=1)
+        else:
+            df_existing = pd.read_csv(EBAY_TEMPLATE_PATH, header=1)
 
-        # Step 3: Combine both lists
-        combined = old_list + new_list  # ['Name', 'Price', 'Quantity', 'Name', 'Price', 'Description']
+        # 3. 将当前新产品字典转换为单行 DataFrame
+        df_new_row = pd.DataFrame([new_items])
 
-        # Step 4: Remove duplicates using dict.fromkeys()
-        unique_dict = dict.fromkeys(combined)  # {'Name': None, 'Price': None, 'Quantity': None, 'Description': None}
+        # 4. 使用 pd.concat 进行外连接合并（Outer Join）
+        df_combined = pd.concat([df_existing, df_new_row], ignore_index=True)
 
-        # Step 5: Convert back to list
-        all_current_columns = list(unique_dict)  # ['Name', 'Price', 'Quantity', 'Description']
+        # 5. 确保基础和官方预设的列顺序不要乱
+        template_headers = pd.read_csv(EBAY_TEMPLATE_PATH, header=1).columns.tolist()
+        dynamic_headers = [col for col in df_combined.columns if col not in template_headers]
+        final_column_order = template_headers + dynamic_headers
+        df_combined = df_combined.reindex(columns=final_column_order)
 
-        # Step 6: Reorder df_new columns to match all_current_columns
-        df_final = df_new.reindex(columns=all_current_columns)
+        # 🌟 修复核心：强制清除 Pandas 自动生成的所有 NaN 并拦截所有破坏格式的 ".0"
+        # 先把所有 NaN 或空值统一替换为空字符串
+        df_combined = df_combined.fillna("")
 
+        # 遍历每一列，只要发现数据变成了类似 "1.0" 或 "396482100023.0" 这种带点零的浮点数字符串，全部切掉！
+        for col in df_combined.columns:
+            df_combined[col] = df_combined[col].astype(str).apply(
+                lambda x: x[:-2] if x.endswith(".0") else x
+            )
+            # 如果整列都是空的，变回干净的空字符串，防止输出 "nan" 字符串
+            df_combined[col] = df_combined[col].apply(lambda x: "" if x == "nan" else x)
 
-
-        df_final.to_csv(
+        # 6. 【安全覆写】每次都将最新的、完美对齐且无浮点数污染的完整大表重新写入文件
+        with open(EBAY_OUTPUT_PATH, "w", encoding="utf-8", newline="") as nf:
+            # 先把 eBay 极其严格的第 0 行 Info 配置信息写进去
+            nf.write(first_line)
+            
+        # 7. 紧接着用 pandas 写入所有数据
+        df_combined.to_csv(
             EBAY_OUTPUT_PATH,
             mode='a',
             index=False,
-            header=file_is_empty,
+            header=True,
             encoding='utf-8'
         )
+        
+        # =========================================================================
+        # 🌟 修复结束，以下保持你原有的返回逻辑不变
+        # =========================================================================
                 
         return{
             "success" : True,
