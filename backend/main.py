@@ -283,21 +283,24 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
 
                 "CRITICAL RULES:\n"
                 "1. Identify the product name and type SOLELY based on the text and graphics visible on the packaging box. DO NOT guess or assume details.\n"
-                "2. 'search_keyword' MUST be a clean, concise 2-4 word phrase containing just the Brand + Core Product Type (e.g., 'Anker USB Hub', 'Logitech Mouse'). Do not include descriptors like 'New', 'Great', or item conditions.\n"
+
+                "2. 'search_keyword' MUST be a generic, 1-4 word physical product type noun that clearly states WHAT the item actually is.\n"
+                "   - STRICTLY FORBIDDEN: Do not include ANY brands, model numbers, marketing adjectives, styles, or condition terms (e.g., DO NOT include 'Sony', 'Logitech', 'New', 'Science Fiction', 'Porous', 'Upgrade').\n"
+                "   - ALWAYS USE GENERIC TERMS: For example, instead of 'Logitech MX Mouse', just output 'Computer Mouse'. Instead of 'Science Fiction Bubble Gun', just output 'Bubble Gun' or 'Toy Bubble Blower'.\n"
+               
                 "3. 'title': MUST be a search-optimized eBay title between 65-80 characters. \n"
                 "   - Structure: [Brand] [Model Number] [Core Product Name] [Key Specs/Features] [Benefit/Usage].\n"
                 "   - MUST NOT include condition terms like 'New' (this is handled by the system category).\n"
                 "   - IF there is remaining space, append relevant high-volume search terms found on the box (e.g., 'Quiet', 'Powerful', 'Portable', 'Adjustable').\n"
                 "   - DO NOT exceed 80 characters.\n\n"
 
-
-
                 "OUTPUT FORMAT:\n"
                 "You must respond with a strict JSON object containing EXACTLY these 2 keys. "
                 "Do not include any markdown formatting like ```json or any introductory text.\n"
                 "{\n"
-                '  "search_keyword": "A concise 2-4 word brand and product phrase for eBay directory search.",\n'
-                '  "title": "A search-optimized eBay title (65-80 characters) emphasizing specs and features."\n'                "}"
+                '  "search_keyword": "A generic, 1-4 word physical product type noun (e.g., \'Bubble Gun\') for eBay directory search.",\n'
+                '  "title": "A search-optimized eBay title (65-80 characters) emphasizing specs and features."\n'
+                "}"
             )
         },
         {
@@ -411,40 +414,39 @@ async def receive_product(price: float = Form(...), images: List[UploadFile] = F
             messages=[
                 {
                     "role": "system",
-                "content": (
-                     "You are a precise data entry assistant. The user will provide you with images of a utility/consumer product "
-                    "(such as electronics, gadgets, tools, home goods, or accessories). These images might show the retail packaging box "
-                    "or the physical item itself.\n\n"
+                "content": ("You are a precise data entry assistant. The user will provide you with images of a utility/consumer product "
+                "(such as electronics, gadgets, tools, home goods, or accessories). These images might show the retail packaging box "
+                "or the physical item itself.\n\n"
 
-
-                    "YOUR TASK:\n"
-                    "1. Analyze the provided images very carefully. Look for brand logos, printed specifications, stickers, model numbers, engraving, or distinct visual features.\n"
-                    "2. Extract the true value for each requested field based on the list provided by the user. You MUST follow these strict data-cleaning rules directly in your output:\n"
-                    "   - BRAND FIELD: If the brand is not visible or cannot be identified, strictly return 'Unbranded'.\n"
-                    
-                    # 🌟 核心修复 1：针对 Model 字段，绝对不能留空
-                    "   - MODEL FIELD: If the specific model number or model name is missing or cannot be found in the image, you MUST strictly return 'Does Not Apply'. NEVER leave it as an empty string \"\".\n"
-                    
-                    # 🌟 核心修复 2：针对 Type 字段，绝对不能留空，必须根据上下文推断一个通用词
-                    "   - TYPE FIELD: If the product type field is missing or unclear, you MUST NOT leave it empty. Instead, deduce a generic category-appropriate term based on what the item actually is (e.g., 'WiFi Extender', 'Projector', 'Paint Pens').\n"
-                    
-                    "   - COLOR FIELD: If the color cannot be found on the packaging OR cannot be determined from the physical product, you MUST return an empty string \"\" (Do not write 'None', 'N/A', or 'See Image').\n"
-                    "   - MPN / UPC / EAN FIELDS: If any identifier/model number is not visible, you MUST strictly return 'Does Not Apply'. No exceptions.\n"
-                    "   - ANY OTHER RECOMMENDED FIELDS: For any other recommended fields requested by the user, if the information is missing, strictly return an empty string \"\".\n"
-
-                    "3. Generate a factual, professional product description based SOLELY on the visible text, specifications, or obvious design features. "
-                   "Do not embellish, exaggerate, or guess any details. This factual part MUST be strictly between 100-200 characters long (excluding the mandatory suffix below).\n"
-                   "   - MANDATORY SUFFIX: At the very end of the description, you MUST append this exact phrase: '\\n\\nThe item is brand new and unused. If you have any questions regarding the product, please feel free to contact me.'\n\n"
+                "YOUR TASK:\n"
+                "1. Analyze the provided images very carefully. Look for brand logos, printed specifications, stickers, model numbers, engraving, or distinct visual features.\n"
+                "2. Extract the true value for each requested field based on the list provided by the user. You MUST follow these strict data-cleaning rules directly in your output to avoid any empty fields (as eBay will strictly reject listings if any dynamically required item specific is left empty):\n"
+                "   - BRAND FIELD: If the brand is not visible or cannot be identified, strictly return 'Unbranded'.\n"
                 
+                "   - MODEL FIELD: If the specific model number or model name is missing or cannot be found in the image, you MUST strictly return 'Does Not Apply'. NEVER leave it as an empty string \"\".\n"
+                
+                "   - TYPE FIELD: If the product type field is missing or unclear, you MUST NOT leave it empty. Instead, deduce a generic category-appropriate term based on what the item actually is (e.g., 'WiFi Extender', 'Projector', 'Paint Pens').\n"
+                
+                "   - MPN / UPC / EAN FIELDS: If any identifier/model number is not visible, you MUST strictly return 'Does Not Apply'. No exceptions.\n"
 
-                    "OUTPUT FORMAT RULES (CRITICAL):\n"
-                    "- You must return a strict JSON object with EXACTLY two keys: 'description' and 'specifics'.\n"
-                    "- Inside 'specifics', you MUST use the exact field names provided by the user as keys.\n"
-                    "- Even if a value is an empty string \"\", you MUST keep the key inside the 'specifics' object. Do NOT drop or omit any keys.\n"
-                    "- Do not use markdown formatting."
-                    )
+                # 🌟 终极核心修复：只要是其他任何属性（包括 Colour, Height, Width, Features 等），找不到信息一律强制返回 'See Images'，彻底拒绝空字符串 ""
+                "   - ALL OTHER FIELDS (including Colour, Height, Length, Width, Depth, Weight, Features, or any other requested specifics): If the information or exact value is NOT visible or cannot be determined from the images, you MUST strictly return 'See Images'. NEVER return an empty string \"\" and NEVER leave it blank.\n"
+                
+                # 🌟 字数拦截线：确保所有填入的值不超过 50 个字符（防止 Features 等字段因字符超长被 eBay 拒绝）
+                "   - CHARACTER LIMIT FOR ALL VALUES: For EVERY field inside the 'specifics' object, the value MUST be extremely concise and strictly UNDER 50 characters long. For multi-value fields like 'Features', list ONLY 2-4 short keywords separated by commas (e.g., 'Waterproof, Portable'). NEVER write full sentences or long descriptive texts.\n"
 
+                "3. Generate a factual, professional product description based SOLELY on the visible text, specifications, or obvious design features. "
+                "Do not embellish, exaggerate, or guess any details. This factual part MUST be strictly between 100-200 characters long (excluding the mandatory suffix below).\n"
+                "   - MANDATORY SUFFIX: At the very end of the description, you MUST append this exact phrase: '\\n\\nThe item is brand new and unused. If you have any questions regarding the product, please feel free to contact me.'\n\n"
+            
 
+                "OUTPUT FORMAT RULES (CRITICAL):\n"
+                "- You must return a strict JSON object with EXACTLY two keys: 'description' and 'specifics'.\n"
+                "- Inside 'specifics', you MUST use the exact field names provided by the user as keys.\n"
+                "- Every value inside 'specifics' MUST strictly obey both the 50-character limit and the 'See Images' fallback rules mentioned above.\n"
+                "- Do NOT drop or omit any keys. Every requested key must have a non-empty, valid string value.\n"
+                "- Do not use markdown formatting."
+            )
 
 
                     
